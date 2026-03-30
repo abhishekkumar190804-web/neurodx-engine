@@ -1,4 +1,4 @@
-# AI-Driven Adaptive GRE Prep Engine
+# NeuroDx | AI-Driven Adaptive GRE Prep Engine
 
 A production-quality **Computer Adaptive Testing (CAT)** API for GRE preparation, powered by:
 - **FastAPI** — async REST API
