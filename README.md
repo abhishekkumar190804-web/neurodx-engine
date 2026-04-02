@@ -1,132 +1,131 @@
-# NeuroDx | AI-Driven Adaptive GRE Prep Engine
+# NeuroDx Testing System
 
-A production-quality **Computer Adaptive Testing (CAT)** API for GRE preparation, powered by:
-- **FastAPI** — async REST API
-- **MongoDB** (Motor) — question bank and session storage
-- **1PL IRT / Rasch Model** — real-time ability estimation via MLE
-- **Google Gemini** — personalized study plan generation
+An AI-powered adaptive application for GRE practice that adjusts question difficulty in real-time based on your performance, and generates personalized study plans.
 
----
+## 🚀 How to Run the Project
 
-## Architecture
+### Prerequisites
 
-```
-POST /sessions                → Create session (theta₀ = 0.5)
-GET  /next-question/{id}      → Adaptive question (closest difficulty to theta)
-POST /submit-answer           → Record response, run Rasch MLE theta update
-POST /generate-plan           → LLM-powered 3-step study plan
-GET  /sessions/{id}/status    → Session state
-GET  /health                  → Liveness probe
-```
+- Python 3.9+
+- MongoDB installed and running locally on port 27017
+- An OpenAI API Key
 
-### IRT: Rasch Model (1PL)
+### Setup Instructions
 
-$$P(\text{correct} \mid \theta, \beta) = \frac{1}{1 + e^{-(\theta - \beta)}}$$
+1. **Clone the repository** and navigate to the project directory.
 
-After each response, theta is updated via **gradient ascent MLE**:
+2. **Install Backend Dependencies**:
 
-$$\nabla\ell(\theta) = \sum_i [r_i - P_i(\theta)], \quad \theta \leftarrow \theta + \alpha \cdot \nabla\ell$$
+   ```bash
+   pip install -r backend/requirements.txt
+   ```
 
-with α = 0.3, convergence threshold = 1e-4, and θ clamped to [−3, 3].
+3. **Configure Environment Variables**:
+   Create a `.env` file in the `backend/` directory with:
 
----
+   ```env
+   MONGO_URI=mongodb://localhost:27017
+   OPENAI_API_KEY=your_actual_api_key_here
+   ```
 
-## Quick Start
+4. **Seed the Database**:
+   Populate MongoDB with the initial question bank.
 
-### 1. Prerequisites
-- Python 3.11+
-- MongoDB running locally (`mongod`) or an Atlas connection string
+   ```bash
+   python backend/seed_db.py
+   ```
 
-### 2. Install dependencies
-```bash
-pip install -r requirements.txt
-```
+5. **Run the Backend Server**:
+   Start the FastAPI app.
 
-### 3. Configure environment
-```bash
-copy .env.example .env
-# Edit .env — add MONGODB_URI and GEMINI_API_KEY
-```
+   ```bash
+   python -m uvicorn backend.main:app --port 8000 --reload
+   ```
 
-### 4. Seed the database (20 GRE questions)
-```bash
-python seed_db.py
-```
-
-### 5. Run the API
-```bash
-uvicorn main:app --reload
-```
-> Swagger UI: http://localhost:8000/docs  
-> ReDoc: http://localhost:8000/redoc
+6. **Access the Application**:
+   Open a web browser and navigate directly to the backend URL, which serves the frontend:
+   `http://localhost:8000/`
 
 ---
 
-## Example Workflow
+## 🧠 Adaptive Algorithm Logic
 
-```bash
-# 1. Create session
-curl -X POST http://localhost:8000/sessions
+The adaptive engine is built strictly upon **Item Response Theory (IRT)**, using a Bayesian updating methodology known as **Expected A Posteriori (EAP)**.
 
-# 2. Get first question
-curl http://localhost:8000/next-question/<session_id>
+1. **Starting Point**: Every test-taker begins with an initial "Ability Score" (θ) of `0.0` (considered the statistical average/baseline in IRT).
+2. **The Adaptive Loop**:
+   - When a student tackles a question, the system evaluates their response.
+   - If they get it correct, their estimated ability (θ) increases, and the algorithm deliberately selects the next question whose known difficulty ($b$) is slightly above their new ability score.
+   - If they get it wrong, their ability drops, and the system selects an easier question.
+3. **Continuous Re-Estimation**: The student's ability isn't just a running average. After _every single response_, the Bayesian EAP estimator recalculates their true ability based on their entire response history in that session.
 
-# 3. Submit answer
-curl -X POST http://localhost:8000/submit-answer \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"<id>","question_id":"<qid>","selected_answer":"C) 5"}'
-
-# 4. Get study plan
-curl -X POST http://localhost:8000/generate-plan \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"<id>"}'
-```
+By adjusting in real-time, the system finds the exact skill level of the user much faster and with greater precision than a static test.
 
 ---
 
-## Running Tests
+## 📖 API Documentation
 
-```bash
-pytest test_api.py -v
-```
+The backend exposes a REST API powered by FastAPI.
 
-Test coverage:
-- **Unit**: `rasch_probability`, `update_theta`, `difficulty_to_beta`, `select_target_difficulty`
-- **Integration**: All 5 endpoints with mocked MongoDB (no DB required)
+- **`GET /health`**
+  Checks whether the API is running and counts the available database questions.
 
----
+- **`POST /session/start`**
+  Initializes a new testing session and returns the unique `session_id` along with the first adaptive question.
+  - _Response_: `{ session_id, message, first_question }`
 
-## Project Structure
+- **`POST /answer`**
+  Submits an answer to the current question, runs the IRT calculation to update ability, and determines the next question.
+  - _Payload_: `{ session_id, question_id, selected_answer }`
+  - _Response_: `{ correct, correct_answer, new_ability_score, difficulty_direction, session_complete, next_question }`
 
-| File | Purpose |
-|------|---------|
-| `main.py` | FastAPI app + all endpoints |
-| `database.py` | Motor async client, settings, index creation |
-| `models.py` | Pydantic v2 schemas |
-| `math_utils.py` | Rasch IRT — probability, MLE theta update |
-| `llm_service.py` | Gemini API — Expert GRE Tutor prompt + fallback |
-| `seed_db.py` | 20 GRE questions seeder (idempotent) |
-| `test_api.py` | pytest unit + integration tests |
+- **`GET /session/{session_id}/summary`**
+  Retrieves the final breakdown of a completed session, including overall accuracy, percentile performance, and per-topic analysis.
 
----
-
-## MongoDB Indexes
-
-Created automatically on startup:
-```
-db.questions.create_index([("difficulty", 1)])  # O(log n) adaptive queries
-db.questions.create_index([("topic", 1)])
-db.user_sessions.create_index([("session_id", 1)], unique=True)
-```
+- **`POST /insights`**
+  Sends the final session data to an LLM (OpenAI) to generate the personalized 3-step study plan.
+  - _Payload_: `{ session_id }`
+  - _Response_: AI-generated `{ overall_assessment, strengths, weaknesses, study_plan, motivational_message }`
 
 ---
 
-## LLM Study Plan
+## 🤖 AI Log
 
-The `/generate-plan` endpoint uses a formatted natural-language prompt (not raw JSON):
+**How AI was leveraged:**
 
-> *"The student attempted 10 questions. They failed 80% of Geometry questions but
-> passed 90% of Algebra at difficulty 0.8. Final ability score (theta): 0.62 …"*
+- **Code Generation Context**: Used advanced code generation tools to quickly scaffold the entire FastAPI backend, define Pydantic data models, and implement the initial CSS logic for the glassmorphic frontend screens.
+- **Algorithm Generation**: Tasked AI with writing the specialized NumPy code required for the Bayesian Expected A Posteriori (EAP) ability estimation within the IRT engine.
+- **Data Creation**: Used AI models to instantly generate JSON blobs of 25 high-quality, GRE-style questions spanning multiple topics, automatically assigning them strict difficulties between 0.1 and 1.0.
 
-**Fallback**: If `GEMINI_API_KEY` is not set or the API call fails, a rule-based
-plan is generated automatically — the endpoint never returns 500.
+**Challenges the AI couldn't inherently solve on the first try:**
+
+- **Asynchronous Execution Flows**: Getting the AI to cleanly serialize specific database queries sequentially while serving static HTML files through the FastAPI router required manual architectural steering.
+- **Deep CSS UI Bugs**: While the AI built an impressive layout rapidly, a persistent automatic-scrolling "jerk" bug on the results screen required stepping outside of pure code generation and deeply debugging DOM screen-transition layout logics manually.
+- **Model Hallucinations with "Fake" DB logic**: The AI occasionally attempted to use non-standard MongoDB aggregation methods for fetching questions which had to be repeatedly steered back to simpler motor-layer queries to reduce async runtime complexity.
+
+---
+
+## 🌍 Deployment Options
+
+Since this is a FastAPI application with a MongoDB backend, here is the recommended deployment strategy:
+
+### 1. Database (MongoDB Atlas)
+
+- Create a free cluster on [MongoDB Atlas](https://www.mongodb.com/cloud/atlas).
+- Get your connection string (e.g., `mongodb+srv://<user>:<password>@cluster0...`).
+- Replace the local `MONGO_URI` in your `.env` file with this string.
+
+### 2. Application Hosting (Render, Railway, or Heroku)
+
+The easiest way to deploy the FastAPI backend and frontend is using a PaaS (Platform as a Service) like **Render**:
+
+1. Push your code to a GitHub repository.
+2. Create a new **Web Service** on Render and connect your repository.
+3. Use the following build and run commands:
+   - **Build Command**: `pip install -r backend/requirements.txt`
+   - **Start Command**: `python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+4. In the Render dashboard, add your **Environment Variables**:
+   - `MONGO_URI` (your Atlas connection string)
+   - `OPENAI_API_KEY` (your OpenAI key)
+
+_(Since the frontend files are served directly by FastAPI from the `/frontend` and `/static` folders, deploying the backend as described above will automatically deploy the frontend as well!)_
